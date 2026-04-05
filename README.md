@@ -61,6 +61,18 @@ test/
 6. Test queries receiver by resource name, predicate, or trace ID
 7. On teardown: `FinalStateLoggerService` logs resource state, `GetDiagnosticSummary()` dumps collected telemetry
 
+## Why Not WebApplicationFactory?
+
+`WebApplicationFactory` (WAF) runs the service in-process, which seems simpler but undermines what this harness validates:
+
+- **OTel SDK ignores DI configuration for exporter endpoints.** The SDK reads `OTEL_EXPORTER_OTLP_ENDPOINT` from environment variables at options construction time. `ConfigureAll<OtlpExporterOptions>` and `PostConfigure` don't reliably override them, forcing fragile env var save/restore hacks.
+- **Trace context doesn't propagate through TestServer.** WAF's in-memory HTTP handler doesn't propagate `Activity.Current` the same way a real HTTP client does. Per-test trace correlation — the core feature of this harness — breaks.
+- **Competing consumers on shared queues.** The WAF's Wolverine instance listens on the same RabbitMQ queues as the out-of-process service, making message delivery non-deterministic.
+- **Metric export timing.** A freshly started WAF hasn't flushed metrics yet (default interval ~60s), requiring inflated timeouts.
+- **It tests the wrong thing.** The whole point is proving telemetry flows through the real infrastructure — Alloy, RabbitMQ, separate processes. WAF removes exactly the parts you're trying to validate.
+
+WAF is the right tool for controller unit tests and DI integration tests. For end-to-end OTel pipeline validation, `DistributedApplicationTestingBuilder` with out-of-process resources is the correct approach.
+
 ## Quick Start
 
 ```bash
