@@ -19,12 +19,16 @@ Each xUnit test gets its own trace span. Trace context propagates through HTTP c
 | Feature | Details |
 |---------|---------|
 | **OTel forwarding** | Logs (Info+), traces, and metrics from all resources flow through Alloy to the test receiver. Silently no-ops when `EXTERNAL_OTEL_ENDPOINT` isn't set. |
+| **Dual Alloy configs** | `alloy-config.default.alloy` routes to the Aspire Dashboard only. `alloy-config.external.alloy` adds immediate batch forwarding (`timeout=0s`, `send_batch_size=1`) to an external receiver. Selected automatically based on `EXTERNAL_OTEL_ENDPOINT`. |
+| **Minimized export delays** | `OTEL_BSP_SCHEDULE_DELAY`, `OTEL_BLRP_SCHEDULE_DELAY`, and `OTEL_METRIC_EXPORT_INTERVAL` set to 1ms when an external endpoint is configured, eliminating SDK-side batching latency. |
 | **Trace correlation** | Per-test spans via [PracticalOtel.xUnit.v3](https://github.com/practical-otel/dotnet-xunit-otel). Full distributed trace across HTTP and message broker hops. |
+| **Per-test trace dump** | `IAsyncLifetime.DisposeAsync` waits for trace-correlated data to stabilize (poll-until-stable), then dumps the full trace chain to `TestOutputHelper` — runs on pass **and** fail. |
 | **Message chain tracing** | Full round-trip: API publishes command → RabbitMQ → Worker processes → publishes result → RabbitMQ → API receives. Every log carries the originating test's trace ID. |
 | **Console log capture** | Resource stdout/stderr via `ResourceLoggerService.WatchAsync()`. Catches startup crashes before OTel initializes. |
 | **Diagnostics** | `GetDiagnosticSummary()` on failure, `FormatTraceChain(traceId)` for visualization, `FinalStateLoggerService` for shutdown state. |
 | **Predicate filtering** | `GetLogRecords(l => l.Body?.Contains("error") == true)` — filter by resource, severity, content, trace ID. |
 | **Structured attributes** | Log record attributes parsed from OTLP JSON — filter by structured fields (e.g., `l.Attributes["ItemId"]`) instead of string-matching the body. |
+| **CancellationToken support** | All `WaitFor*Async` methods accept `CancellationToken` as the primary API, integrating with xUnit's `TestContext.Current.CancellationToken` for responsive test cancellation. |
 | **Severity filtering** | Alloy drops Debug/Trace-level logs (`severity_number < 9`) before forwarding, keeping the receiver focused on actionable output. |
 
 ## Tests
@@ -46,6 +50,9 @@ Each xUnit test gets its own trace span. Trace context propagates through HTTP c
 ```
 src/
   AppHost/                   Aspire orchestrator + Grafana Alloy config
+    Grafana/
+      alloy-config.default.alloy    Aspire Dashboard sink only
+      alloy-config.external.alloy   External receiver + immediate batch forwarding
   ApiService/                REST API + Wolverine publisher
   WorkerService/             Background service + Wolverine handlers
   ServiceDefaults/           Shared OTel config + message types
@@ -57,12 +64,13 @@ test/
 
 1. `OtlpTestFixture` starts an OTLP HTTP receiver on a dynamic port
 2. AppHost starts with `--EXTERNAL_OTEL_ENDPOINT=http://host.docker.internal:{port}`
-3. `AddGrafanaAlloy()` detects `EXTERNAL_OTEL_ENDPOINT` and selects the external Alloy config (`alloy-config.external.alloy`) with immediate batch forwarding; without it, the default config (`alloy-config.default.alloy`) routes only to the Aspire Dashboard
-4. `WithAppForwarding()` auto-sets `OTEL_EXPORTER_OTLP_ENDPOINT` on all resources → Alloy, and minimizes SDK batch delays (`OTEL_BSP_SCHEDULE_DELAY`, `OTEL_BLRP_SCHEDULE_DELAY`, `OTEL_METRIC_EXPORT_INTERVAL`) when an external endpoint is configured
-5. `TracedPipelineStartup` creates a span per test; HTTP/Wolverine propagate trace context
-6. Test queries receiver by resource name, predicate, or trace ID
-7. `IAsyncLifetime.DisposeAsync` waits for trace-correlated data to stabilize, then dumps the full trace chain to `TestOutputHelper` (runs on pass and fail)
-8. On teardown: `FinalStateLoggerService` logs resource state, `GetDiagnosticSummary()` dumps collected telemetry
+3. `AddGrafanaAlloy()` detects `EXTERNAL_OTEL_ENDPOINT` and selects `alloy-config.external.alloy` with immediate batch forwarding; without it, `alloy-config.default.alloy` routes only to the Aspire Dashboard
+4. `WithAppForwarding()` auto-sets `OTEL_EXPORTER_OTLP_ENDPOINT` on all resources → Alloy, and minimizes SDK batch delays when an external endpoint is configured
+5. Resources start in dependency order: Alloy + RabbitMQ → WorkerService → ApiService
+6. `TracedPipelineStartup` creates a span per test; HTTP/Wolverine propagate trace context
+7. Test queries receiver by resource name, predicate, or trace ID
+8. `IAsyncLifetime.DisposeAsync` waits for trace-correlated data to stabilize, then dumps the full trace chain to `TestOutputHelper` (runs on pass and fail)
+9. On teardown: `FinalStateLoggerService` logs resource state, `GetDiagnosticSummary()` dumps collected telemetry
 
 ## Why Not WebApplicationFactory?
 
