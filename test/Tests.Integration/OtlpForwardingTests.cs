@@ -157,6 +157,33 @@ public class OtlpForwardingTests(OtlpTestFixture fixture) : IClassFixture<OtlpTe
     }
 
     [Fact]
+    public async Task DebugLogs_AreFilteredByAlloy()
+    {
+        // Wait for enough heartbeats that Debug logs would have been emitted
+        var infoLogs = await fixture.Receiver.WaitForLogsAsync(
+            l => l.ResourceName == "workerservice"
+                 && l.Body?.Contains("Worker heartbeat") == true,
+            minCount: 3,
+            timeout: TimeSpan.FromSeconds(30));
+        Assert.True(infoLogs.Count >= 3);
+
+        // Verify NO Debug-level logs arrived — Alloy's filter drops severity_number < 9
+        var debugLogs = fixture.Receiver.GetLogRecords(
+            l => l.ResourceName == "workerservice"
+                 && l.Body?.Contains("Worker debug tick") == true);
+        Assert.Empty(debugLogs);
+
+        // Also verify by severity number: nothing below Info (9) should arrive
+        var belowInfoLogs = fixture.Receiver.GetLogRecords(
+            l => l.ResourceName == "workerservice"
+                 && l.SeverityNumber > 0 && l.SeverityNumber < 9);
+        Assert.Empty(belowInfoLogs);
+
+        TestContext.Current.TestOutputHelper?.WriteLine(
+            $"Info+ logs: {infoLogs.Count}, Debug logs (should be 0): {debugLogs.Count}");
+    }
+
+    [Fact]
     public async Task MessageChain_IsTraceable()
     {
         var currentTraceId = Activity.Current?.TraceId.ToHexString();

@@ -92,29 +92,42 @@ public sealed class OtlpReceiver : IAsyncDisposable
     }
 
     /// <summary>
-    /// Waits until the expected number of log records matching the predicate arrive, or times out.
+    /// Waits until the expected number of log records matching the predicate arrive, or the token is cancelled.
     /// </summary>
     public async Task<IReadOnlyList<OtlpLogRecord>> WaitForLogsAsync(
-        Func<OtlpLogRecord, bool> predicate, int minCount, TimeSpan timeout)
+        Func<OtlpLogRecord, bool> predicate, int minCount, CancellationToken ct)
     {
-        var deadline = DateTime.UtcNow + timeout;
-        while (DateTime.UtcNow < deadline)
+        while (!ct.IsCancellationRequested)
         {
             var logs = GetLogRecords(predicate);
             if (logs.Count >= minCount)
                 return logs;
-            await Task.Delay(500);
+            await Task.Delay(500, ct);
         }
         return GetLogRecords(predicate);
     }
 
+    /// <inheritdoc cref="WaitForLogsAsync(Func{OtlpLogRecord, bool}, int, CancellationToken)"/>
+    public Task<IReadOnlyList<OtlpLogRecord>> WaitForLogsAsync(
+        Func<OtlpLogRecord, bool> predicate, int minCount, TimeSpan timeout)
+    {
+        return WaitForLogsAsync(predicate, minCount, new CancellationTokenSource(timeout).Token);
+    }
+
     /// <summary>
-    /// Waits until the expected number of log records from a resource arrive, or times out.
+    /// Waits until the expected number of log records from a resource arrive, or the token is cancelled.
     /// </summary>
+    public Task<IReadOnlyList<OtlpLogRecord>> WaitForLogsAsync(
+        string resourceName, int minCount, CancellationToken ct)
+    {
+        return WaitForLogsAsync(l => l.ResourceName == resourceName, minCount, ct);
+    }
+
+    /// <inheritdoc cref="WaitForLogsAsync(string, int, CancellationToken)"/>
     public Task<IReadOnlyList<OtlpLogRecord>> WaitForLogsAsync(
         string resourceName, int minCount, TimeSpan timeout)
     {
-        return WaitForLogsAsync(l => l.ResourceName == resourceName, minCount, timeout);
+        return WaitForLogsAsync(resourceName, minCount, new CancellationTokenSource(timeout).Token);
     }
 
     // --- Span queries ---
@@ -138,29 +151,42 @@ public sealed class OtlpReceiver : IAsyncDisposable
     }
 
     /// <summary>
-    /// Waits until the expected number of spans matching the predicate arrive, or times out.
+    /// Waits until the expected number of spans matching the predicate arrive, or the token is cancelled.
     /// </summary>
     public async Task<IReadOnlyList<OtlpSpan>> WaitForSpansAsync(
-        Func<OtlpSpan, bool> predicate, int minCount, TimeSpan timeout)
+        Func<OtlpSpan, bool> predicate, int minCount, CancellationToken ct)
     {
-        var deadline = DateTime.UtcNow + timeout;
-        while (DateTime.UtcNow < deadline)
+        while (!ct.IsCancellationRequested)
         {
             var spans = GetSpans(predicate);
             if (spans.Count >= minCount)
                 return spans;
-            await Task.Delay(500);
+            await Task.Delay(500, ct);
         }
         return GetSpans(predicate);
     }
 
+    /// <inheritdoc cref="WaitForSpansAsync(Func{OtlpSpan, bool}, int, CancellationToken)"/>
+    public Task<IReadOnlyList<OtlpSpan>> WaitForSpansAsync(
+        Func<OtlpSpan, bool> predicate, int minCount, TimeSpan timeout)
+    {
+        return WaitForSpansAsync(predicate, minCount, new CancellationTokenSource(timeout).Token);
+    }
+
     /// <summary>
-    /// Waits until the expected number of spans from a resource arrive, or times out.
+    /// Waits until the expected number of spans from a resource arrive, or the token is cancelled.
     /// </summary>
+    public Task<IReadOnlyList<OtlpSpan>> WaitForSpansAsync(
+        string resourceName, int minCount, CancellationToken ct)
+    {
+        return WaitForSpansAsync(s => s.ResourceName == resourceName, minCount, ct);
+    }
+
+    /// <inheritdoc cref="WaitForSpansAsync(string, int, CancellationToken)"/>
     public Task<IReadOnlyList<OtlpSpan>> WaitForSpansAsync(
         string resourceName, int minCount, TimeSpan timeout)
     {
-        return WaitForSpansAsync(s => s.ResourceName == resourceName, minCount, timeout);
+        return WaitForSpansAsync(resourceName, minCount, new CancellationTokenSource(timeout).Token);
     }
 
     // --- Metric queries ---
@@ -184,29 +210,42 @@ public sealed class OtlpReceiver : IAsyncDisposable
     }
 
     /// <summary>
-    /// Waits until the expected number of metrics matching the predicate arrive, or times out.
+    /// Waits until the expected number of metrics matching the predicate arrive, or the token is cancelled.
     /// </summary>
     public async Task<IReadOnlyList<OtlpMetric>> WaitForMetricsAsync(
-        Func<OtlpMetric, bool> predicate, int minCount, TimeSpan timeout)
+        Func<OtlpMetric, bool> predicate, int minCount, CancellationToken ct)
     {
-        var deadline = DateTime.UtcNow + timeout;
-        while (DateTime.UtcNow < deadline)
+        while (!ct.IsCancellationRequested)
         {
             var metrics = GetMetrics(predicate);
             if (metrics.Count >= minCount)
                 return metrics;
-            await Task.Delay(500);
+            await Task.Delay(500, ct);
         }
         return GetMetrics(predicate);
     }
 
+    /// <inheritdoc cref="WaitForMetricsAsync(Func{OtlpMetric, bool}, int, CancellationToken)"/>
+    public Task<IReadOnlyList<OtlpMetric>> WaitForMetricsAsync(
+        Func<OtlpMetric, bool> predicate, int minCount, TimeSpan timeout)
+    {
+        return WaitForMetricsAsync(predicate, minCount, new CancellationTokenSource(timeout).Token);
+    }
+
     /// <summary>
-    /// Waits until the expected number of metrics from a resource arrive, or times out.
+    /// Waits until the expected number of metrics from a resource arrive, or the token is cancelled.
     /// </summary>
+    public Task<IReadOnlyList<OtlpMetric>> WaitForMetricsAsync(
+        string resourceName, int minCount, CancellationToken ct)
+    {
+        return WaitForMetricsAsync(m => m.ResourceName == resourceName, minCount, ct);
+    }
+
+    /// <inheritdoc cref="WaitForMetricsAsync(string, int, CancellationToken)"/>
     public Task<IReadOnlyList<OtlpMetric>> WaitForMetricsAsync(
         string resourceName, int minCount, TimeSpan timeout)
     {
-        return WaitForMetricsAsync(m => m.ResourceName == resourceName, minCount, timeout);
+        return WaitForMetricsAsync(resourceName, minCount, new CancellationTokenSource(timeout).Token);
     }
 
     // --- Diagnostics ---
@@ -326,6 +365,7 @@ public sealed class OtlpReceiver : IAsyncDisposable
                         TimestampUnixNano = logRecord.TryGetProperty("timeUnixNano", out var ts)
                             ? long.TryParse(ts.GetString(), out var v) ? v : 0
                             : 0,
+                        Attributes = ParseAttributes(logRecord),
                     });
                 }
             }
@@ -399,6 +439,31 @@ public sealed class OtlpReceiver : IAsyncDisposable
         return null;
     }
 
+    private static IReadOnlyDictionary<string, string?> ParseAttributes(JsonElement element)
+    {
+        var result = new Dictionary<string, string?>();
+        if (!element.TryGetProperty("attributes", out var attributes) ||
+            attributes.ValueKind != JsonValueKind.Array)
+            return result;
+
+        foreach (var attr in attributes.EnumerateArray())
+        {
+            var key = attr.GetStringOrNull("key");
+            if (key is null) continue;
+
+            if (attr.TryGetProperty("value", out var value))
+            {
+                // OTLP attribute values are typed: stringValue, intValue, boolValue, etc.
+                var strVal = value.GetStringOrNull("stringValue")
+                    ?? value.GetStringOrNull("intValue")
+                    ?? value.GetStringOrNull("boolValue")
+                    ?? value.GetStringOrNull("doubleValue");
+                result[key] = strVal;
+            }
+        }
+        return result;
+    }
+
     private static string? GetBodyString(JsonElement logRecord)
     {
         if (!logRecord.TryGetProperty("body", out var body))
@@ -428,6 +493,7 @@ public record OtlpLogRecord
     public string? TraceId { get; init; }
     public string? SpanId { get; init; }
     public long TimestampUnixNano { get; init; }
+    public IReadOnlyDictionary<string, string?> Attributes { get; init; } = new Dictionary<string, string?>();
 }
 
 public record OtlpSpan
