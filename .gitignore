@@ -1,0 +1,16 @@
+## .NET
+bin/
+obj/
+*.user
+*.suo
+
+## IDE
+.vs/
+.idea/
+*.swp
+
+## Test results
+TestResults/
+
+## User secrets
+secrets.json

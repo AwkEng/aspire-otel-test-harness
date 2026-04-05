@@ -1,0 +1,15 @@
+<Solution>
+  <Folder Name="/solution/">
+    <File Path="README.md" />
+  </Folder>
+  <Folder Name="/src/">
+    <Project Path="src/AppHost/AppHost.csproj" />
+    <Project Path="src/ApiService/ApiService.csproj" />
+    <Project Path="src/ServiceDefaults/ServiceDefaults.csproj" />
+    <Project Path="src/Web/Web.csproj" />
+    <Project Path="src/WorkerService/WorkerService.csproj" />
+  </Folder>
+  <Folder Name="/test/">
+    <Project Path="test/Tests.Integration/Tests.Integration.csproj" />
+  </Folder>
+</Solution>

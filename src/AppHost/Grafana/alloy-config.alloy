@@ -1,0 +1,75 @@
+livedebugging {
+  enabled = true
+}
+
+// OTLP receivers for telemetry from applications
+otelcol.receiver.otlp "default" {
+  grpc {
+    endpoint = "0.0.0.0:4317"
+  }
+
+  http {
+    endpoint = "0.0.0.0:4318"
+  }
+
+  output {
+    metrics = [otelcol.exporter.otlp.aspire.input, otelcol.exporter.otlphttp.external.input]
+    logs    = [otelcol.exporter.otlp.aspire.input, otelcol.processor.filter.external_logs.input]
+    traces  = [otelcol.exporter.otlp.aspire.input, otelcol.exporter.otlphttp.external.input]
+  }
+}
+
+// External path: Info+ (drop Debug/Trace)
+// OTLP severity: Trace=1-4, Debug=5-8, Info=9-12, Warn=13-16, Error=17-20, Fatal=21-24
+otelcol.processor.filter "external_logs" {
+  error_mode = "ignore"
+
+  logs {
+    log_record = [
+      `severity_number < 9`,
+    ]
+  }
+
+  output {
+    logs = [otelcol.exporter.otlphttp.external.input]
+  }
+}
+
+// Export to Aspire Dashboard
+// Fire-and-forget: no retry or queuing so historical data doesn't replay on restart
+otelcol.exporter.otlp "aspire" {
+  sending_queue {
+    enabled = false
+  }
+  retry_on_failure {
+    enabled = false
+  }
+  client {
+    endpoint = sys.env("ASPIRE_ENDPOINT")
+    headers = {
+      "x-otlp-api-key" = sys.env("ASPIRE_API_KEY"),
+    }
+    tls {
+      insecure = true
+    }
+  }
+}
+
+// Export to external endpoint (test harness)
+// Fire-and-forget: silently fails when EXTERNAL_OTEL_ENDPOINT is not set (falls back to localhost:0)
+otelcol.exporter.otlphttp "external" {
+  sending_queue {
+    enabled = false
+  }
+  retry_on_failure {
+    enabled = false
+  }
+  encoding = "json"
+  client {
+    endpoint = coalesce(sys.env("EXTERNAL_OTEL_ENDPOINT"), "http://localhost:0")
+    compression = "none"
+    tls {
+      insecure = true
+    }
+  }
+}

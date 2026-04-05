@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json.schemastore.org/launchsettings.json",
+  "profiles": {
+    "https": {
+      "commandName": "Project",
+      "dotnetRunMessages": true,
+      "launchBrowser": true,
+      "applicationUrl": "https://aspireoteltestharness.dev.localhost:17166;http://aspireoteltestharness.dev.localhost:15102",
+      "environmentVariables": {
+        "ASPNETCORE_ENVIRONMENT": "Development",
+        "DOTNET_ENVIRONMENT": "Development",
+        "ASPIRE_DASHBOARD_OTLP_ENDPOINT_URL": "https://localhost:21194",
+        "ASPIRE_DASHBOARD_MCP_ENDPOINT_URL": "https://localhost:23219",
+        "ASPIRE_RESOURCE_SERVICE_ENDPOINT_URL": "https://localhost:22077"
+      }
+    },
+    "http": {
+      "commandName": "Project",
+      "dotnetRunMessages": true,
+      "launchBrowser": true,
+      "applicationUrl": "http://aspireoteltestharness.dev.localhost:15102",
+      "environmentVariables": {
+        "ASPNETCORE_ENVIRONMENT": "Development",
+        "DOTNET_ENVIRONMENT": "Development",
+        "ASPIRE_DASHBOARD_OTLP_ENDPOINT_URL": "http://localhost:19118",
+        "ASPIRE_DASHBOARD_MCP_ENDPOINT_URL": "http://localhost:18128",
+        "ASPIRE_RESOURCE_SERVICE_ENDPOINT_URL": "http://localhost:20299"
+      }
+    }
+  }
+}
