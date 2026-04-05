@@ -19,6 +19,9 @@ public static class AppHostExtensions
             logging.AddFilter("Aspire.Hosting", LogLevel.Warning);
             logging.AddFilter("Microsoft.AspNetCore", LogLevel.Warning);
             logging.AddFilter("Microsoft.Extensions.Diagnostics.HealthChecks", LogLevel.None);
+            // Suppress noisy Alloy container logs (connection refused errors from
+            // the Aspire Dashboard exporter, which isn't reachable from Docker in tests)
+            logging.AddFilter("AppHost.Resources.grafana-alloy", LogLevel.None);
         });
 
         builder.Services.AddHostedService<FinalStateLoggerService>();

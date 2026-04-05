@@ -9,6 +9,7 @@ public class Worker(ILogger<Worker> logger) : BackgroundService
         while (!stoppingToken.IsCancellationRequested)
         {
             _heartbeatCount++;
+            logger.LogDebug("Worker debug tick #{Count}", _heartbeatCount);
             logger.LogInformation("Worker heartbeat #{Count} at {Time}", _heartbeatCount, DateTimeOffset.Now);
 
             if (_heartbeatCount % 4 == 0)

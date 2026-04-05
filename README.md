@@ -24,6 +24,8 @@ Each xUnit test gets its own trace span. Trace context propagates through HTTP c
 | **Console log capture** | Resource stdout/stderr via `ResourceLoggerService.WatchAsync()`. Catches startup crashes before OTel initializes. |
 | **Diagnostics** | `GetDiagnosticSummary()` on failure, `FormatTraceChain(traceId)` for visualization, `FinalStateLoggerService` for shutdown state. |
 | **Predicate filtering** | `GetLogRecords(l => l.Body?.Contains("error") == true)` — filter by resource, severity, content, trace ID. |
+| **Structured attributes** | Log record attributes parsed from OTLP JSON — filter by structured fields (e.g., `l.Attributes["ItemId"]`) instead of string-matching the body. |
+| **Severity filtering** | Alloy drops Debug/Trace-level logs (`severity_number < 9`) before forwarding, keeping the receiver focused on actionable output. |
 
 ## Tests
 
@@ -36,6 +38,7 @@ Each xUnit test gets its own trace span. Trace context propagates through HTTP c
 | `Traces_AreCorrelated_AcrossServices` | HTTP trace context propagates end-to-end |
 | `Metrics_AreForwarded` | Runtime/ASP.NET metrics arrive at the receiver |
 | `ConsoleLogs_AreCaptured` | Raw stdout/stderr captured per resource |
+| `DebugLogs_AreFilteredByAlloy` | Debug-level logs are dropped by Alloy's severity filter |
 | `MessageChain_IsTraceable` | Full round-trip (API → Worker → API) shares one trace ID |
 
 ## Project Structure
@@ -48,7 +51,7 @@ src/
   ServiceDefaults/           Shared OTel config + message types
   Web/                       Blazor frontend (Aspire template)
 test/
-  Tests.Integration/         8 integration tests + OTLP receiver infrastructure
+  Tests.Integration/         9 integration tests + OTLP receiver infrastructure
 ```
 
 ## How It Works
