@@ -13,32 +13,31 @@ Route all OTel through **[Grafana Alloy](https://grafana.com/oss/alloy-opentelem
 ```mermaid
 flowchart TD
     subgraph aspire ["Aspire AppHost"]
-        direction TB
-
-        subgraph services ["Application Services"]
-            direction LR
-            API[ApiService] -- "publish command" --> RMQ[(RabbitMQ)] -- "consume" --> Worker[WorkerService]
-            Worker -- "publish result" --> RMQ -- "consume" --> API
-        end
-
+        API[ApiService]
+        Worker[WorkerService]
+        RMQ[(RabbitMQ)]
         Alloy{{Grafana Alloy}}
         Dashboard[Aspire Dashboard]
+
+        API -- "publish" --> RMQ
+        RMQ -- "consume" --> Worker
+        Worker -- "publish" --> RMQ
+        RMQ -- "consume" --> API
+
+        API -- "OTel" --> Alloy
+        Worker -- "OTel" --> Alloy
+        Alloy -- "OTel" --> Dashboard
     end
 
     subgraph test ["Test Process · xUnit"]
-        direction LR
-        TC[Test Code] -. "query" .-> OR[OTLP Receiver]
+        TC[Test Code]
+        OR[OTLP Receiver]
+        TC -. "query" .-> OR
     end
 
     TC -- "HTTP" --> API
-    API & Worker -- "OTel" --> Alloy
     TC -. "OTel" .-> Alloy
     Alloy -- "OTel" --> OR
-    Alloy -- "OTel" --> Dashboard
-
-    style test fill:#1a1a2e,stroke:#e0e0e0,stroke-width:2px,color:#fff
-    style aspire fill:#0f3460,stroke:#e0e0e0,stroke-width:2px,color:#fff
-    style services fill:#16213e,stroke:#e0e0e0,stroke-width:2px,color:#fff
 ```
 
 Each xUnit test gets its own trace span. Trace context propagates through HTTP calls **and** RabbitMQ messages, so the test can filter by trace ID to see only its own request chain across all services.
