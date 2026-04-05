@@ -324,10 +324,8 @@ public sealed class OtlpReceiver : IAsyncDisposable
         if (traceLogs.Count > 0)
         {
             sb.AppendLine($"  --- Correlated logs ({traceLogs.Count}) ---");
-            foreach (var log in traceLogs.Take(20))
-                sb.AppendLine($"  [{log.ResourceName}] {log.SeverityText}: {Truncate(log.Body, 120)}");
-            if (traceLogs.Count > 20)
-                sb.AppendLine($"  ... and {traceLogs.Count - 20} more");
+            foreach (var log in traceLogs)
+                sb.AppendLine($"  [{log.ResourceName}] {log.SeverityText}: {log.Body}");
         }
 
         return sb.ToString();

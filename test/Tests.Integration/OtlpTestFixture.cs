@@ -55,20 +55,12 @@ public class OtlpTestFixture : IAsyncLifetime
         //    so we capture startup logs and crash output
         StartConsoleLogCapture();
 
-        // 7. Wait for resources to be ready
+        // 7. Wait for resources to be ready.
+        //    ApiService WaitFor chain guarantees: alloy, rabbitMq, workerService are all ready.
         var ct = new CancellationTokenSource(StartupTimeout).Token;
 
         await Application.ResourceNotifications
-            .WaitForResourceHealthyAsync("messaging", ct);
-
-        await Application.ResourceNotifications
-            .WaitForResourceHealthyAsync("grafana-alloy", ct);
-
-        await Application.ResourceNotifications
             .WaitForResourceHealthyAsync("apiservice", ct);
-
-        await Application.ResourceNotifications
-            .WaitForResourceAsync("workerservice", KnownResourceStates.Running, ct);
     }
 
     private void StartConsoleLogCapture()

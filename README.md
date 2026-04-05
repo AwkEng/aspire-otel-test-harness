@@ -49,7 +49,6 @@ src/
   ApiService/                REST API + Wolverine publisher
   WorkerService/             Background service + Wolverine handlers
   ServiceDefaults/           Shared OTel config + message types
-  Web/                       Blazor frontend (Aspire template)
 test/
   Tests.Integration/         9 integration tests + OTLP receiver infrastructure
 ```
@@ -58,11 +57,12 @@ test/
 
 1. `OtlpTestFixture` starts an OTLP HTTP receiver on a dynamic port
 2. AppHost starts with `--EXTERNAL_OTEL_ENDPOINT=http://host.docker.internal:{port}`
-3. `WithAppForwarding()` auto-sets `OTEL_EXPORTER_OTLP_ENDPOINT` on all resources → Alloy
-4. Alloy fans out to Aspire Dashboard + test receiver
+3. `AddGrafanaAlloy()` detects `EXTERNAL_OTEL_ENDPOINT` and selects the external Alloy config (`alloy-config.external.alloy`) with immediate batch forwarding; without it, the default config (`alloy-config.default.alloy`) routes only to the Aspire Dashboard
+4. `WithAppForwarding()` auto-sets `OTEL_EXPORTER_OTLP_ENDPOINT` on all resources → Alloy, and minimizes SDK batch delays (`OTEL_BSP_SCHEDULE_DELAY`, `OTEL_BLRP_SCHEDULE_DELAY`, `OTEL_METRIC_EXPORT_INTERVAL`) when an external endpoint is configured
 5. `TracedPipelineStartup` creates a span per test; HTTP/Wolverine propagate trace context
 6. Test queries receiver by resource name, predicate, or trace ID
-7. On teardown: `FinalStateLoggerService` logs resource state, `GetDiagnosticSummary()` dumps collected telemetry
+7. `IAsyncLifetime.DisposeAsync` waits for trace-correlated data to stabilize, then dumps the full trace chain to `TestOutputHelper` (runs on pass and fail)
+8. On teardown: `FinalStateLoggerService` logs resource state, `GetDiagnosticSummary()` dumps collected telemetry
 
 ## Why Not WebApplicationFactory?
 

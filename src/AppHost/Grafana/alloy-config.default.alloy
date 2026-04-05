@@ -1,0 +1,40 @@
+livedebugging {
+  enabled = true
+}
+
+// OTLP receivers for telemetry from applications
+otelcol.receiver.otlp "default" {
+  grpc {
+    endpoint = "0.0.0.0:4317"
+  }
+
+  http {
+    endpoint = "0.0.0.0:4318"
+  }
+
+  output {
+    metrics = [otelcol.exporter.otlp.aspire.input]
+    logs    = [otelcol.exporter.otlp.aspire.input]
+    traces  = [otelcol.exporter.otlp.aspire.input]
+  }
+}
+
+// Export to Aspire Dashboard
+// Fire-and-forget: no retry or queuing so historical data doesn't replay on restart
+otelcol.exporter.otlp "aspire" {
+  sending_queue {
+    enabled = false
+  }
+  retry_on_failure {
+    enabled = false
+  }
+  client {
+    endpoint = sys.env("ASPIRE_ENDPOINT")
+    headers = {
+      "x-otlp-api-key" = sys.env("ASPIRE_API_KEY"),
+    }
+    tls {
+      insecure = true
+    }
+  }
+}

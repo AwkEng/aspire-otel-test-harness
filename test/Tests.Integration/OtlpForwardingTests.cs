@@ -5,8 +5,43 @@ using Tests.Integration.Infrastructure;
 
 namespace Tests.Integration;
 
-public class OtlpForwardingTests(OtlpTestFixture fixture) : IClassFixture<OtlpTestFixture>
+public class OtlpForwardingTests(OtlpTestFixture fixture) : IClassFixture<OtlpTestFixture>, IAsyncLifetime
 {
+    private string? _traceId;
+
+    public ValueTask InitializeAsync()
+    {
+        _traceId = Activity.Current?.TraceId.ToHexString();
+        return ValueTask.CompletedTask;
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        if (_traceId is null) return;
+
+        var output = TestContext.Current.TestOutputHelper;
+        if (output is null) return;
+
+        // Wait until no new trace-correlated data arrives (stable for 500ms, max 5s)
+        var lastCount = 0;
+        var stableAt = DateTime.UtcNow;
+        var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(5);
+        while (DateTime.UtcNow - stableAt < TimeSpan.FromMilliseconds(500)
+               && DateTime.UtcNow < deadline)
+        {
+            await Task.Delay(250);
+            var count = fixture.Receiver.GetSpans(s => s.TraceId == _traceId).Count
+                      + fixture.Receiver.GetLogRecords(l => l.TraceId == _traceId).Count;
+            if (count != lastCount)
+            {
+                lastCount = count;
+                stableAt = DateTime.UtcNow;
+            }
+        }
+
+        output.WriteLine(fixture.Receiver.FormatTraceChain(_traceId));
+    }
+
     [Fact]
     public async Task WorkerLogs_AreForwarded()
     {
@@ -42,12 +77,6 @@ public class OtlpForwardingTests(OtlpTestFixture fixture) : IClassFixture<OtlpTe
             timeout: TimeSpan.FromSeconds(30));
 
         Assert.NotEmpty(logs);
-
-        foreach (var log in logs.Take(5))
-        {
-            TestContext.Current.TestOutputHelper?.WriteLine(
-                $"[apiservice] {log.SeverityText}: {log.Body}");
-        }
     }
 
     [Fact]
@@ -91,29 +120,23 @@ public class OtlpForwardingTests(OtlpTestFixture fixture) : IClassFixture<OtlpTe
     [Fact]
     public async Task Traces_AreCorrelated_AcrossServices()
     {
-        var currentTraceId = Activity.Current?.TraceId.ToHexString();
-        Assert.NotNull(currentTraceId);
+        Assert.NotNull(_traceId);
 
         var httpClient = fixture.Application.CreateHttpClient("apiservice");
         var response = await httpClient.GetAsync("/weatherforecast");
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
 
-        // Wait specifically for a span with this test's trace ID
         var correlatedSpans = await fixture.Receiver.WaitForSpansAsync(
-            s => s.ResourceName == "apiservice" && s.TraceId == currentTraceId,
+            s => s.ResourceName == "apiservice" && s.TraceId == _traceId,
             minCount: 1,
             timeout: TimeSpan.FromSeconds(30));
 
         Assert.NotEmpty(correlatedSpans);
-
-        TestContext.Current.TestOutputHelper?.WriteLine(
-            fixture.Receiver.FormatTraceChain(currentTraceId));
     }
 
     [Fact]
     public async Task Metrics_AreForwarded()
     {
-        // .NET runtime and ASP.NET Core emit metrics automatically — wait for some to arrive
         var metrics = await fixture.Receiver.WaitForMetricsAsync(
             "apiservice",
             minCount: 1,
@@ -133,7 +156,6 @@ public class OtlpForwardingTests(OtlpTestFixture fixture) : IClassFixture<OtlpTe
     [Fact]
     public async Task ConsoleLogs_AreCaptured()
     {
-        // Wait for worker to produce some console output
         var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(15);
         while (DateTime.UtcNow < deadline && !fixture.ConsoleLogs.ContainsKey("workerservice"))
             await Task.Delay(500);
@@ -159,7 +181,6 @@ public class OtlpForwardingTests(OtlpTestFixture fixture) : IClassFixture<OtlpTe
     [Fact]
     public async Task DebugLogs_AreFilteredByAlloy()
     {
-        // Wait for enough heartbeats that Debug logs would have been emitted
         var infoLogs = await fixture.Receiver.WaitForLogsAsync(
             l => l.ResourceName == "workerservice"
                  && l.Body?.Contains("Worker heartbeat") == true,
@@ -167,13 +188,11 @@ public class OtlpForwardingTests(OtlpTestFixture fixture) : IClassFixture<OtlpTe
             timeout: TimeSpan.FromSeconds(30));
         Assert.True(infoLogs.Count >= 3);
 
-        // Verify NO Debug-level logs arrived — Alloy's filter drops severity_number < 9
         var debugLogs = fixture.Receiver.GetLogRecords(
             l => l.ResourceName == "workerservice"
                  && l.Body?.Contains("Worker debug tick") == true);
         Assert.Empty(debugLogs);
 
-        // Also verify by severity number: nothing below Info (9) should arrive
         var belowInfoLogs = fixture.Receiver.GetLogRecords(
             l => l.ResourceName == "workerservice"
                  && l.SeverityNumber > 0 && l.SeverityNumber < 9);
@@ -186,8 +205,7 @@ public class OtlpForwardingTests(OtlpTestFixture fixture) : IClassFixture<OtlpTe
     [Fact]
     public async Task MessageChain_IsTraceable()
     {
-        var currentTraceId = Activity.Current?.TraceId.ToHexString();
-        Assert.NotNull(currentTraceId);
+        Assert.NotNull(_traceId);
 
         // 1. POST to trigger the message chain
         var httpClient = fixture.Application.CreateHttpClient("apiservice");
@@ -229,13 +247,7 @@ public class OtlpForwardingTests(OtlpTestFixture fixture) : IClassFixture<OtlpTe
         Assert.NotEmpty(resultLogs);
 
         // 5. Verify trace correlation across the full round-trip
-        Assert.Contains(processingLogs, l => l.TraceId == currentTraceId);
-        Assert.Contains(resultLogs, l => l.TraceId == currentTraceId);
-
-        // 6. Print the full trace chain
-        TestContext.Current.TestOutputHelper?.WriteLine(
-            $"Round-trip completed for '{itemName}' (id={itemId})");
-        TestContext.Current.TestOutputHelper?.WriteLine(
-            fixture.Receiver.FormatTraceChain(currentTraceId));
+        Assert.Contains(processingLogs, l => l.TraceId == _traceId);
+        Assert.Contains(resultLogs, l => l.TraceId == _traceId);
     }
 }

@@ -13,9 +13,22 @@ otelcol.receiver.otlp "default" {
   }
 
   output {
-    metrics = [otelcol.exporter.otlp.aspire.input, otelcol.exporter.otlphttp.external.input]
-    logs    = [otelcol.exporter.otlp.aspire.input, otelcol.processor.filter.external_logs.input]
-    traces  = [otelcol.exporter.otlp.aspire.input, otelcol.exporter.otlphttp.external.input]
+    metrics = [otelcol.processor.batch.immediate.input]
+    logs    = [otelcol.processor.filter.external_logs.input]
+    traces  = [otelcol.processor.batch.immediate.input]
+  }
+}
+
+// Immediate forwarding: no batching delay so telemetry arrives at the
+// external receiver as fast as possible.
+otelcol.processor.batch "immediate" {
+  timeout = "0s"
+  send_batch_size = 1
+
+  output {
+    metrics = [otelcol.exporter.otlphttp.external.input]
+    logs    = [otelcol.exporter.otlphttp.external.input]
+    traces  = [otelcol.exporter.otlphttp.external.input]
   }
 }
 
@@ -31,31 +44,11 @@ otelcol.processor.filter "external_logs" {
   }
 
   output {
-    logs = [otelcol.exporter.otlphttp.external.input]
+    logs = [otelcol.processor.batch.immediate.input]
   }
 }
 
-// Export to Aspire Dashboard
-// Fire-and-forget: no retry or queuing so historical data doesn't replay on restart
-otelcol.exporter.otlp "aspire" {
-  sending_queue {
-    enabled = false
-  }
-  retry_on_failure {
-    enabled = false
-  }
-  client {
-    endpoint = sys.env("ASPIRE_ENDPOINT")
-    headers = {
-      "x-otlp-api-key" = sys.env("ASPIRE_API_KEY"),
-    }
-    tls {
-      insecure = true
-    }
-  }
-}
-
-// Export to external endpoint (test harness)
+// Export to external endpoint
 // Fire-and-forget: silently fails when EXTERNAL_OTEL_ENDPOINT is not set (falls back to localhost:0)
 otelcol.exporter.otlphttp "external" {
   sending_queue {
