@@ -250,4 +250,53 @@ public class OtlpForwardingTests(OtlpTestFixture fixture) : IClassFixture<OtlpTe
         Assert.Contains(processingLogs, l => l.TraceId == _traceId);
         Assert.Contains(resultLogs, l => l.TraceId == _traceId);
     }
+
+    /// <summary>
+    /// Verifies that handler exceptions and retries are visible through OTel:
+    /// 1. Error spans (per handler execution) — Wolverine sets status=ERROR with exception type
+    /// 2. Error logs (per attempt) — Wolverine's built-in "Failed to process message" logging
+    /// The error policy is: retry twice (100ms, 500ms) then move to error queue.
+    /// This produces 3 handler executions but only 2 error spans — the final
+    /// MoveToErrorQueue action doesn't re-execute the handler.
+    /// </summary>
+    [Fact]
+    public async Task HandlerException_RetriesAreVisible_InTracesAndLogs()
+    {
+        Assert.NotNull(_traceId);
+
+        // 1. POST to trigger the failing handler
+        var httpClient = fixture.Application.CreateHttpClient("apiservice");
+        var itemName = $"fail-{Guid.NewGuid():N}";
+        var response = await httpClient.PostAsJsonAsync("/process-fail", new { itemName },
+            TestContext.Current.CancellationToken);
+        Assert.Equal(System.Net.HttpStatusCode.Accepted, response.StatusCode);
+
+        // 2. Wait for Wolverine's per-attempt error logs — fires on EVERY failure (3 total)
+        var errorLogs = await fixture.Receiver.WaitForLogsAsync(
+            l => l.ResourceName == "workerservice"
+                 && l.SeverityText == "Error"
+                 && l.Body?.Contains("Failed to process message") == true
+                 && l.Body?.Contains("ProcessItemFailCommand") == true,
+            minCount: 3,
+            timeout: TimeSpan.FromSeconds(30));
+
+        Assert.True(errorLogs.Count >= 3,
+            $"Expected at least 3 error logs (one per attempt), got {errorLogs.Count}");
+
+        // 3. Wait for error spans — 2 from RetryWithCooldown handler re-executions
+        var errorSpans = await fixture.Receiver.WaitForSpansAsync(
+            s => s.ResourceName == "workerservice"
+                 && s.IsError
+                 && s.Name?.Contains("ProcessItemFailCommand") == true,
+            minCount: 2,
+            timeout: TimeSpan.FromSeconds(15));
+
+        Assert.True(errorSpans.Count >= 2,
+            $"Expected at least 2 error spans (retries), got {errorSpans.Count}");
+
+        // 4. Verify trace chain shows ERROR markers with exception type
+        var traceChain = fixture.Receiver.FormatTraceChain(errorSpans.First().TraceId!);
+        Assert.Contains("ERROR", traceChain);
+        Assert.Contains("InvalidOperationException", traceChain);
+    }
 }

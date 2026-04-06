@@ -313,7 +313,24 @@ public sealed class OtlpReceiver : IAsyncDisposable
         foreach (var span in traceSpans)
         {
             var parent = span.ParentSpanId is not null ? $" parent={span.ParentSpanId}" : "";
-            sb.AppendLine($"  [{span.ResourceName}] {span.Name} (span={span.SpanId}{parent})");
+            var status = span.IsError ? " ERROR" : "";
+            sb.AppendLine($"  [{span.ResourceName}] {span.Name} (span={span.SpanId}{parent}){status}");
+
+            if (span.IsError && span.StatusMessage is not null)
+                sb.AppendLine($"    Status: {span.StatusMessage}");
+
+            foreach (var evt in span.Events.Where(e => e.IsException))
+            {
+                sb.AppendLine($"    Exception: {evt.ExceptionType}: {evt.ExceptionMessage}");
+                if (evt.ExceptionStackTrace is not null)
+                {
+                    foreach (var line in evt.ExceptionStackTrace.Split('\n').Take(10))
+                        sb.AppendLine($"      {line.TrimEnd()}");
+                    var totalLines = evt.ExceptionStackTrace.Split('\n').Length;
+                    if (totalLines > 10)
+                        sb.AppendLine($"      ... ({totalLines - 10} more lines)");
+                }
+            }
         }
 
         var traceLogs = _logs
@@ -379,6 +396,28 @@ public sealed class OtlpReceiver : IAsyncDisposable
             {
                 foreach (var span in scopeSpan.GetPropertyOrEmpty("spans"))
                 {
+                    var statusCode = 0;
+                    string? statusMessage = null;
+                    if (span.TryGetProperty("status", out var status))
+                    {
+                        if (status.TryGetProperty("code", out var code))
+                            statusCode = code.GetInt32();
+                        statusMessage = status.GetStringOrNull("message");
+                    }
+
+                    var events = new List<OtlpSpanEvent>();
+                    foreach (var evt in span.GetPropertyOrEmpty("events"))
+                    {
+                        events.Add(new OtlpSpanEvent
+                        {
+                            Name = evt.GetStringOrNull("name"),
+                            TimestampUnixNano = evt.TryGetProperty("timeUnixNano", out var evtTs)
+                                ? long.TryParse(evtTs.GetString(), out var evtV) ? evtV : 0
+                                : 0,
+                            Attributes = ParseAttributes(evt),
+                        });
+                    }
+
                     _spans.Add(new OtlpSpan
                     {
                         ResourceName = serviceName,
@@ -392,6 +431,10 @@ public sealed class OtlpReceiver : IAsyncDisposable
                         EndTimeUnixNano = span.TryGetProperty("endTimeUnixNano", out var et)
                             ? long.TryParse(et.GetString(), out var v2) ? v2 : 0
                             : 0,
+                        StatusCode = statusCode,
+                        StatusMessage = statusMessage,
+                        Events = events,
+                        Attributes = ParseAttributes(span),
                     });
                 }
             }
@@ -503,6 +546,25 @@ public record OtlpSpan
     public string? ParentSpanId { get; init; }
     public long StartTimeUnixNano { get; init; }
     public long EndTimeUnixNano { get; init; }
+    /// <summary>OTel status code: 0=Unset, 1=Ok, 2=Error.</summary>
+    public int StatusCode { get; init; }
+    public string? StatusMessage { get; init; }
+    public IReadOnlyList<OtlpSpanEvent> Events { get; init; } = [];
+    public IReadOnlyDictionary<string, string?> Attributes { get; init; } = new Dictionary<string, string?>();
+
+    public bool IsError => StatusCode == 2;
+}
+
+public record OtlpSpanEvent
+{
+    public string? Name { get; init; }
+    public long TimestampUnixNano { get; init; }
+    public IReadOnlyDictionary<string, string?> Attributes { get; init; } = new Dictionary<string, string?>();
+
+    public bool IsException => Name == "exception";
+    public string? ExceptionType => Attributes.GetValueOrDefault("exception.type");
+    public string? ExceptionMessage => Attributes.GetValueOrDefault("exception.message");
+    public string? ExceptionStackTrace => Attributes.GetValueOrDefault("exception.stacktrace");
 }
 
 public record OtlpMetric

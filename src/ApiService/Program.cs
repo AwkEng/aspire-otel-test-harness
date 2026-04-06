@@ -29,6 +29,9 @@ builder.Services.AddWolverine(opts =>
     opts.PublishMessage<ProcessItemCommand>()
         .ToRabbitQueue("process-commands");
 
+    opts.PublishMessage<ProcessItemFailCommand>()
+        .ToRabbitQueue("process-commands");
+
     opts.ListenToRabbitQueue("process-results");
 });
 
@@ -63,6 +66,13 @@ app.MapPost("/process", async (ProcessItemRequest request, IMessageBus bus) =>
 {
     var itemId = Guid.NewGuid();
     await bus.PublishAsync(new ProcessItemCommand(itemId, request.ItemName));
+    return Results.Accepted(value: new { itemId });
+});
+
+app.MapPost("/process-fail", async (ProcessItemRequest request, IMessageBus bus) =>
+{
+    var itemId = Guid.NewGuid();
+    await bus.PublishAsync(new ProcessItemFailCommand(itemId, request.ItemName));
     return Results.Accepted(value: new { itemId });
 });
 

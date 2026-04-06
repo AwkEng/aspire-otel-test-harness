@@ -25,6 +25,7 @@ Each xUnit test gets its own trace span. Trace context propagates through HTTP c
 | **Per-test trace dump** | `IAsyncLifetime.DisposeAsync` waits for trace-correlated data to stabilize (poll-until-stable), then dumps the full trace chain to `TestOutputHelper` — runs on pass **and** fail. |
 | **Message chain tracing** | Full round-trip: API publishes command → RabbitMQ → Worker processes → publishes result → RabbitMQ → API receives. Every log carries the originating test's trace ID. |
 | **Console log capture** | Resource stdout/stderr via `ResourceLoggerService.WatchAsync()`. Catches startup crashes before OTel initializes. |
+| **Error span capture** | `OtlpSpan` parses status code, status message, span events (including exception type/message/stacktrace), and attributes. `FormatTraceChain` shows `ERROR` tags with exception details on failed spans. |
 | **Diagnostics** | `GetDiagnosticSummary()` on failure, `FormatTraceChain(traceId)` for visualization, `FinalStateLoggerService` for shutdown state. |
 | **Predicate filtering** | `GetLogRecords(l => l.Body?.Contains("error") == true)` — filter by resource, severity, content, trace ID. |
 | **Structured attributes** | Log record attributes parsed from OTLP JSON — filter by structured fields (e.g., `l.Attributes["ItemId"]`) instead of string-matching the body. |
@@ -44,6 +45,7 @@ Each xUnit test gets its own trace span. Trace context propagates through HTTP c
 | `ConsoleLogs_AreCaptured` | Raw stdout/stderr captured per resource |
 | `DebugLogs_AreFilteredByAlloy` | Debug-level logs are dropped by Alloy's severity filter |
 | `MessageChain_IsTraceable` | Full round-trip (API → Worker → API) shares one trace ID |
+| `HandlerException_RetriesAreVisible_InTracesAndLogs` | Handler failures produce error spans (per-execution) and error logs (per-attempt) visible through OTel |
 
 ## Project Structure
 
@@ -57,7 +59,7 @@ src/
   WorkerService/             Background service + Wolverine handlers
   ServiceDefaults/           Shared OTel config + message types
 test/
-  Tests.Integration/         9 integration tests + OTLP receiver infrastructure
+  Tests.Integration/         10 integration tests + OTLP receiver infrastructure
 ```
 
 ## How It Works
