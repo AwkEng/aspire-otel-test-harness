@@ -43,12 +43,14 @@ public sealed class DeferredDispatcher(
     }
 
     /// <summary>
-    /// Option D: publish under a fresh Producer span that starts a new trace and
-    /// carries an ActivityLink back to the enqueue-time trace. Wolverine captures
-    /// this Producer span's traceparent on the outgoing envelope, so the receiving
+    /// Publish under a fresh Producer span that starts a new trace and carries an
+    /// ActivityLink back to the enqueue-time trace. Wolverine captures this
+    /// Producer span's traceparent on the outgoing envelope, so the receiving
     /// handler inherits the Producer's new trace (not whatever happened to be
-    /// Activity.Current at dispatch time) AND the link provides correlation back
-    /// to whoever originally enqueued the work.
+    /// Activity.Current at dispatch time) and the link provides correlation back
+    /// to whoever originally enqueued the work. Matches the OTel messaging
+    /// semantic conventions: use span links (not parent-child) for producer↔
+    /// consumer correlation in async/batch scenarios.
     /// </summary>
     private async Task PublishWithLink(IMessageBus bus, DeferredWorkEntry entry)
     {
@@ -68,9 +70,9 @@ public sealed class DeferredDispatcher(
             tags: null,
             links: links);
 
-        // Option F: correlation attribute. Test assertions can filter by this
-        // attribute instead of trace id, decoupling tests from whatever trace-
-        // structure choice the production code makes (Option C vs D vs G).
+        // Correlation attributes: let tests locate the dispatched work by attribute
+        // rather than trace id, so assertions stay stable if the correlation
+        // strategy here ever changes.
         publishActivity?.SetTag("enqueue.trace_id", enqueueTraceId);
         publishActivity?.SetTag("deferred_work.item_id", entry.Command.ItemId.ToString());
 

@@ -4,9 +4,9 @@ namespace Tests.Integration.Infrastructure;
 
 /// <summary>
 /// Writes per-test log content to a _Logs/ folder next to the test source file.
-/// Mirrors the pattern used in SpectrumPlanner's WebApiTestBase so the same
-/// inspection workflow (open a .testlog file, scan the trace chain) transfers.
-/// Complementary to TestOutputHelper — same content, but on disk.
+/// Complementary to TestOutputHelper — same content, but on disk, so failed-
+/// test investigation is a matter of opening a .testlog file instead of
+/// fishing through VS Test Explorer output.
 /// </summary>
 public static class TestLogWriter
 {

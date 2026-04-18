@@ -11,8 +11,8 @@ public record ProcessItemFailCommand(Guid ItemId, string ItemName);
 
 /// <summary>
 /// Enqueues a ProcessItemCommand for deferred dispatch by the DeferredDispatcher.
-/// Used to reproduce the trace-context mixing bug (issue SpectrumPlanner#155):
-/// enqueue happens under the HTTP request's trace, dispatch happens later under
-/// the dispatcher tick's own trace.
+/// Demonstrates a common trace-context mixing pattern: enqueue happens under one
+/// trace (e.g. an HTTP request), dispatch happens later under a background
+/// timer's own trace, and naive instrumentation loses the correlation.
 /// </summary>
 public record ScheduleItemCommand(Guid ItemId, string ItemName);

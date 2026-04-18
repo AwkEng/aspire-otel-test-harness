@@ -42,8 +42,8 @@ public class OtlpForwardingTests(OtlpTestFixture fixture) : IClassFixture<OtlpTe
         sb.AppendLine(fixture.Receiver.FormatTraceChain(_traceId));
 
         // Include any downstream traces that link back to this trace — e.g. the
-        // dispatch trace produced by DeferredDispatcher under Option D, which
-        // lives on its own trace id but carries an ActivityLink to _traceId.
+        // dispatch trace produced by DeferredDispatcher, which lives on its own
+        // trace id but carries an ActivityLink to _traceId.
         var linkedTraceIds = fixture.Receiver
             .GetSpans(s => s.Links.Any(l => l.TraceId == _traceId))
             .Select(s => s.TraceId!)
@@ -277,12 +277,12 @@ public class OtlpForwardingTests(OtlpTestFixture fixture) : IClassFixture<OtlpTe
     }
 
     /// <summary>
-    /// Verifies SpectrumPlanner issue #155 is fixed by Option D: when work is
-    /// enqueued under trace A and dispatched by a background tick, the dispatched
-    /// Producer span starts a new trace and carries an ActivityLink back to the
-    /// enqueuer. The handler runs under the Producer's new trace (as its child
-    /// via Wolverine's traceparent propagation), and the Producer span's link
-    /// is discoverable by traversing the handler's trace.
+    /// Verifies deferred-dispatch correlation: when work is enqueued under trace A
+    /// and dispatched by a background tick, the dispatched Producer span starts a
+    /// new trace and carries an ActivityLink back to the enqueuer. The handler
+    /// runs under the Producer's new trace (as its child via Wolverine's
+    /// traceparent propagation), and the Producer span's link is discoverable by
+    /// traversing the handler's trace.
     /// </summary>
     [Fact]
     public async Task DeferredDispatch_CorrelatesToEnqueueTraceViaActivityLink()
@@ -311,7 +311,7 @@ public class OtlpForwardingTests(OtlpTestFixture fixture) : IClassFixture<OtlpTe
 
         var handlerTraceId = handlerLog.TraceId;
 
-        // 3. Option D assertions:
+        // 3. Correlation assertions:
         //    (a) handler trace is NOT the enqueue trace (new trace created at dispatch)
         //    (b) the handler's trace contains a span with an ActivityLink back to
         //        the enqueue trace — this is the Producer span on the dispatcher side
@@ -338,11 +338,11 @@ public class OtlpForwardingTests(OtlpTestFixture fixture) : IClassFixture<OtlpTe
     }
 
     /// <summary>
-    /// Option F: correlation-attribute filtering. Verifies the dispatcher stamps
-    /// a stable correlation attribute so test assertions can find the dispatched
-    /// work WITHOUT depending on which trace-structure choice the production code
-    /// made (Option C same-trace vs Option D new-trace-with-link). If SP later
-    /// changes the strategy, tests filtering by attribute keep working.
+    /// Verifies the dispatcher stamps a stable correlation attribute
+    /// (enqueue.trace_id) so tests can find the dispatched work by attribute
+    /// alone, without depending on trace-structure assumptions. If the
+    /// correlation strategy later changes (different link shape, different
+    /// span kind), attribute-based tests keep working.
     /// </summary>
     [Fact]
     public async Task DeferredDispatch_FindableByEnqueueTraceIdAttribute()

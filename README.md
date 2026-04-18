@@ -22,9 +22,9 @@ Each xUnit test gets its own trace span. Trace context propagates through HTTP c
 | **Dual Alloy configs** | `alloy-config.default.alloy` routes to the Aspire Dashboard only. `alloy-config.external.alloy` adds immediate batch forwarding (`timeout=0s`, `send_batch_size=1`) to an external receiver. Selected automatically based on `EXTERNAL_OTEL_ENDPOINT`. |
 | **Minimized export delays** | `OTEL_BSP_SCHEDULE_DELAY`, `OTEL_BLRP_SCHEDULE_DELAY`, and `OTEL_METRIC_EXPORT_INTERVAL` set to 1ms when an external endpoint is configured, eliminating SDK-side batching latency. |
 | **Trace correlation** | Per-test spans via [PracticalOtel.xUnit.v3](https://github.com/practical-otel/dotnet-xunit-otel). Full distributed trace across HTTP and message broker hops. |
-| **Per-test trace dump** | `IAsyncLifetime.DisposeAsync` waits for trace-correlated data to stabilize (poll-until-stable), then dumps the full trace chain to `TestOutputHelper` **and** writes it to `_Logs/{TestMethod}.testlog` next to the test source. Also includes any downstream trace that has an `ActivityLink` back to the test's trace (e.g. deferred-dispatch traces under Option D). Runs on pass **and** fail. |
-| **Deferred-dispatch correlation (OTel Option D)** | `DeferredDispatcher` background service drains an in-memory work store on a 500ms tick and publishes commands under a fresh `Producer` span that starts a new trace and carries an `ActivityLink` back to the enqueue-time trace. Matches OTel messaging semantic conventions (links for producer↔consumer correlation in async/batch scenarios). Bounded trace lifetimes; downstream handlers run under the Producer's new trace via Wolverine traceparent propagation. |
-| **Correlation-attribute filtering** | Dispatcher stamps `enqueue.trace_id` and `deferred_work.item_id` as span attributes so tests can filter work by attribute (`WaitForSpansByAttributeAsync`) without depending on trace-structure choices. Useful when the production-code trace strategy may evolve but tests should remain stable. |
+| **Per-test trace dump** | `IAsyncLifetime.DisposeAsync` waits for trace-correlated data to stabilize (poll-until-stable), then dumps the full trace chain to `TestOutputHelper` **and** writes it to `_Logs/{TestMethod}.testlog` next to the test source. Also follows `ActivityLink`s to include any downstream trace linked back to the test's trace (e.g. the deferred-dispatch trace demonstrated below). Runs on pass **and** fail. |
+| **Deferred-dispatch correlation** | `DeferredDispatcher` background service drains an in-memory work store on a 500ms tick and publishes commands under a fresh `ActivityKind.Producer` span that starts a new trace and carries an `ActivityLink` back to the enqueue-time trace. Matches [OTel messaging semantic conventions](https://opentelemetry.io/docs/specs/semconv/messaging/messaging-spans/) — links, not parent-child, for producer↔consumer correlation in async/batch scenarios. Bounded per-dispatch trace lifetimes; downstream handlers run under the Producer's new trace via Wolverine traceparent propagation. |
+| **Correlation-attribute filtering** | Dispatcher stamps `enqueue.trace_id` and `deferred_work.item_id` as span attributes so tests can filter work by attribute (`WaitForSpansByAttributeAsync`) without depending on trace-structure assumptions. Keeps test assertions stable if the dispatcher's correlation strategy evolves later. |
 | **Message chain tracing** | Full round-trip: API publishes command → RabbitMQ → Worker processes → publishes result → RabbitMQ → API receives. Every log carries the originating test's trace ID. |
 | **Console log capture** | Resource stdout/stderr via `ResourceLoggerService.WatchAsync()`. Catches startup crashes before OTel initializes. |
 | **Error span capture** | `OtlpSpan` parses status code, status message, span events (including exception type/message/stacktrace), and attributes. `FormatTraceChain` shows `ERROR` tags with exception details on failed spans. |
@@ -94,18 +94,24 @@ test/
 8. `IAsyncLifetime.DisposeAsync` waits for trace-correlated data to stabilize, then dumps the full trace chain to `TestOutputHelper` **and** to `_Logs/{TestMethod}.testlog` next to the test source — also following `ActivityLink`s to include any downstream traces the test caused. Runs on pass and fail.
 9. On teardown: `FinalStateLoggerService` logs resource state, `GetDiagnosticSummary()` dumps collected telemetry
 
-### Deferred Dispatch (Option D correlation)
+### Deferred Dispatch
 
-`POST /schedule` enqueues a `ScheduleItemCommand` under the HTTP request's trace (A). The worker's `ScheduleItemCommandHandler` captures `Activity.Current.Id` as the enqueue-time traceparent and stores a `ProcessItemCommand` in the in-memory `DeferredWorkStore`. A `DeferredDispatcher` `BackgroundService` drains the store every 500ms. For each entry:
+Demonstrates correlating deferred / queue-backed work back to its enqueuer without inheriting the dispatcher tick's ambient trace.
 
-1. Parse the stored traceparent into an `ActivityContext`
-2. Start a fresh `ActivityKind.Producer` span `DeferredDispatcher.Publish` — new root trace, with `ActivityLink(enqueuerContext)` back to A
-3. Stamp `enqueue.trace_id` + `deferred_work.item_id` span attributes
-4. `bus.PublishAsync` inside the Producer scope → Wolverine stamps the Producer's new traceparent on the envelope
+**The problem this solves.** When a background service drains a queue on a timer and publishes a message, the default behavior of most instrumentation (including Wolverine's `OutgoingContextMiddleware`) is to capture `Activity.Current` at publish time and stamp it on the outgoing envelope. The downstream handler then inherits *the dispatcher tick's trace*, not the trace under which the work was originally enqueued. In parallel test runs or busy production systems, this means a unit of work scheduled by request A may show up in request B's trace purely because B's dispatch tick happened to pick it up. Trace-based investigation becomes ambiguous.
 
-The downstream `ProcessItemCommandHandler` runs under the Producer's new trace (as its child via Wolverine traceparent propagation). The handler's trace is therefore bounded to this dispatch (avoids unbounded trace lifetimes for queued work), while the `ActivityLink` preserves the correlation back to whoever originally enqueued. This matches [OTel messaging semantic conventions](https://opentelemetry.io/docs/specs/semconv/messaging/messaging-spans/), which prefer links over parent-child for producer↔consumer in async/batch scenarios.
+**How this harness demonstrates a fix.**
 
-Each `.testlog` file contains both the test's trace chain and the downstream dispatch trace chain, with a `-- linked downstream trace --` separator and `Linked: trace=... span=...` annotations on the Producer span, making the full lifecycle visible in one file.
+`POST /schedule` enqueues a `ScheduleItemCommand` under the HTTP request's trace (call it trace A). The worker's `ScheduleItemCommandHandler` captures `Activity.Current.Id` as the enqueue-time traceparent and stores a `ProcessItemCommand` in the in-memory `DeferredWorkStore`. A `DeferredDispatcher` `BackgroundService` drains the store every 500ms. For each entry:
+
+1. Parse the stored traceparent into an `ActivityContext`.
+2. Start a fresh `ActivityKind.Producer` span `DeferredDispatcher.Publish` on a **new root trace**, with `ActivityLink(enqueuerContext)` back to A.
+3. Stamp `enqueue.trace_id` + `deferred_work.item_id` span attributes on the Producer span.
+4. Call `bus.PublishAsync` inside the Producer scope → Wolverine stamps the Producer's new traceparent on the envelope.
+
+The downstream `ProcessItemCommandHandler` runs under the Producer's new trace (as its child, via Wolverine traceparent propagation). The handler's trace is therefore **bounded** to this dispatch — avoiding the unbounded-lifetime problem that arises when a queued item is parented to a long-lived request trace — while the `ActivityLink` preserves correlation back to whoever originally enqueued. This matches the OTel spec's guidance that async/batch producer↔consumer correlation should use span links rather than parent-child relationships.
+
+Each `.testlog` file contains both the test's own trace chain and any downstream dispatch trace chain, with a `-- linked downstream trace --` separator and `Linked: trace=... span=...` annotations on the Producer span, making the full lifecycle visible in one file.
 
 ## Why Not WebApplicationFactory?
 
