@@ -11,6 +11,8 @@ obj/
 
 ## Test results
 TestResults/
+_Logs/
+*.testlog
 
 ## User secrets
 secrets.json

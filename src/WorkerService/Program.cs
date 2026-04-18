@@ -8,6 +8,9 @@ var builder = Host.CreateApplicationBuilder(args);
 builder.AddServiceDefaults();
 builder.Services.AddHostedService<Worker>();
 
+builder.Services.AddSingleton<DeferredWorkStore>();
+builder.Services.AddHostedService<DeferredDispatcher>();
+
 // Wolverine messaging
 builder.Services.AddWolverine(opts =>
 {
@@ -24,6 +27,13 @@ builder.Services.AddWolverine(opts =>
     opts.Discovery.IncludeAssembly(typeof(Program).Assembly);
 
     opts.ListenToRabbitQueue("process-commands");
+    opts.ListenToRabbitQueue("schedule-commands");
+
+    // Worker sends ProcessItemCommand back through RabbitMQ to its own
+    // process-commands queue so the full message-bus trace hop is exercised
+    // (same shape as SP's DispatchWorkCommandHandler → downstream handlers).
+    opts.PublishMessage<ProcessItemCommand>()
+        .ToRabbitQueue("process-commands");
 
     opts.PublishMessage<ItemProcessedEvent>()
         .ToRabbitQueue("process-results");

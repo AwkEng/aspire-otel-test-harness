@@ -22,10 +22,13 @@ Each xUnit test gets its own trace span. Trace context propagates through HTTP c
 | **Dual Alloy configs** | `alloy-config.default.alloy` routes to the Aspire Dashboard only. `alloy-config.external.alloy` adds immediate batch forwarding (`timeout=0s`, `send_batch_size=1`) to an external receiver. Selected automatically based on `EXTERNAL_OTEL_ENDPOINT`. |
 | **Minimized export delays** | `OTEL_BSP_SCHEDULE_DELAY`, `OTEL_BLRP_SCHEDULE_DELAY`, and `OTEL_METRIC_EXPORT_INTERVAL` set to 1ms when an external endpoint is configured, eliminating SDK-side batching latency. |
 | **Trace correlation** | Per-test spans via [PracticalOtel.xUnit.v3](https://github.com/practical-otel/dotnet-xunit-otel). Full distributed trace across HTTP and message broker hops. |
-| **Per-test trace dump** | `IAsyncLifetime.DisposeAsync` waits for trace-correlated data to stabilize (poll-until-stable), then dumps the full trace chain to `TestOutputHelper` — runs on pass **and** fail. |
+| **Per-test trace dump** | `IAsyncLifetime.DisposeAsync` waits for trace-correlated data to stabilize (poll-until-stable), then dumps the full trace chain to `TestOutputHelper` **and** writes it to `_Logs/{TestMethod}.testlog` next to the test source. Also includes any downstream trace that has an `ActivityLink` back to the test's trace (e.g. deferred-dispatch traces under Option D). Runs on pass **and** fail. |
+| **Deferred-dispatch correlation (OTel Option D)** | `DeferredDispatcher` background service drains an in-memory work store on a 500ms tick and publishes commands under a fresh `Producer` span that starts a new trace and carries an `ActivityLink` back to the enqueue-time trace. Matches OTel messaging semantic conventions (links for producer↔consumer correlation in async/batch scenarios). Bounded trace lifetimes; downstream handlers run under the Producer's new trace via Wolverine traceparent propagation. |
+| **Correlation-attribute filtering** | Dispatcher stamps `enqueue.trace_id` and `deferred_work.item_id` as span attributes so tests can filter work by attribute (`WaitForSpansByAttributeAsync`) without depending on trace-structure choices. Useful when the production-code trace strategy may evolve but tests should remain stable. |
 | **Message chain tracing** | Full round-trip: API publishes command → RabbitMQ → Worker processes → publishes result → RabbitMQ → API receives. Every log carries the originating test's trace ID. |
 | **Console log capture** | Resource stdout/stderr via `ResourceLoggerService.WatchAsync()`. Catches startup crashes before OTel initializes. |
 | **Error span capture** | `OtlpSpan` parses status code, status message, span events (including exception type/message/stacktrace), and attributes. `FormatTraceChain` shows `ERROR` tags with exception details on failed spans. |
+| **Span link parsing** | `OtlpSpan.Links` carries parsed `OtlpSpanLink` records (`TraceId`, `SpanId`, `Attributes`). `FormatTraceChain` renders `Linked: trace=... span=...` lines, making producer↔consumer correlation visible in `.testlog` output. |
 | **Diagnostics** | `GetDiagnosticSummary()` on failure, `FormatTraceChain(traceId)` for visualization, `FinalStateLoggerService` for shutdown state. |
 | **Predicate filtering** | `GetLogRecords(l => l.Body?.Contains("error") == true)` — filter by resource, severity, content, trace ID. |
 | **Structured attributes** | Log record attributes parsed from OTLP JSON — filter by structured fields (e.g., `l.Attributes["ItemId"]`) instead of string-matching the body. |
@@ -46,6 +49,8 @@ Each xUnit test gets its own trace span. Trace context propagates through HTTP c
 | `DebugLogs_AreFilteredByAlloy` | Debug-level logs are dropped by Alloy's severity filter |
 | `MessageChain_IsTraceable` | Full round-trip (API → Worker → API) shares one trace ID |
 | `HandlerException_RetriesAreVisible_InTracesAndLogs` | Handler failures produce error spans (per-execution) and error logs (per-attempt) visible through OTel |
+| `DeferredDispatch_CorrelatesToEnqueueTraceViaActivityLink` | Work enqueued under trace A and dispatched by a background tick correlates back to A via an `ActivityLink` on the dispatcher's `Producer` span — the handler runs under a new bounded trace linked to the enqueuer |
+| `DeferredDispatch_FindableByEnqueueTraceIdAttribute` | Dispatched work is discoverable via `enqueue.trace_id` attribute alone, without depending on trace-structure assumptions |
 
 ## Project Structure
 
@@ -57,9 +62,24 @@ src/
       alloy-config.external.alloy   External receiver + immediate batch forwarding
   ApiService/                REST API + Wolverine publisher
   WorkerService/             Background service + Wolverine handlers
-  ServiceDefaults/           Shared OTel config + message types
+    DeferredWorkStore.cs         In-memory queue of commands awaiting dispatch
+    DeferredDispatcher.cs        BackgroundService that drains the store under a
+                                 new Producer span with ActivityLink to enqueuer
+    Handlers/
+      ScheduleItemCommandHandler.cs   Captures enqueue-time traceparent + stores
+      ProcessItemCommandHandler.cs    Processes dispatched work
+      ProcessItemFailCommandHandler.cs
+  ServiceDefaults/           Shared OTel config (adds "DeferredDispatcher" source) + messages
 test/
-  Tests.Integration/         10 integration tests + OTLP receiver infrastructure
+  Tests.Integration/         12 integration tests + OTLP receiver infrastructure
+    Infrastructure/
+      OtlpReceiver.cs              HTTP receiver + span-link parsing + attribute filters
+      OtlpTestFixture.cs           Shared fixture (AppHost + receiver + console log capture)
+      OtelPipelineStartup.cs       Per-test trace spans via PracticalOtel.xUnit.v3
+      AppHostExtensions.cs         WithTestingDefaults() logging/filter config
+      FinalStateLoggerService.cs   Resource-state dump on shutdown
+      TestLogWriter.cs             Writes _Logs/{TestMethod}.testlog next to test source
+    _Logs/                      Per-test trace-chain output (written on pass and fail)
 ```
 
 ## How It Works
@@ -70,9 +90,22 @@ test/
 4. `WithAppForwarding()` auto-sets `OTEL_EXPORTER_OTLP_ENDPOINT` on all resources → Alloy, and minimizes SDK batch delays when an external endpoint is configured
 5. Resources start in dependency order: Alloy + RabbitMQ → WorkerService → ApiService
 6. `TracedPipelineStartup` creates a span per test; HTTP/Wolverine propagate trace context
-7. Test queries receiver by resource name, predicate, or trace ID
-8. `IAsyncLifetime.DisposeAsync` waits for trace-correlated data to stabilize, then dumps the full trace chain to `TestOutputHelper` (runs on pass and fail)
+7. Test queries receiver by resource name, predicate, attribute, or trace ID
+8. `IAsyncLifetime.DisposeAsync` waits for trace-correlated data to stabilize, then dumps the full trace chain to `TestOutputHelper` **and** to `_Logs/{TestMethod}.testlog` next to the test source — also following `ActivityLink`s to include any downstream traces the test caused. Runs on pass and fail.
 9. On teardown: `FinalStateLoggerService` logs resource state, `GetDiagnosticSummary()` dumps collected telemetry
+
+### Deferred Dispatch (Option D correlation)
+
+`POST /schedule` enqueues a `ScheduleItemCommand` under the HTTP request's trace (A). The worker's `ScheduleItemCommandHandler` captures `Activity.Current.Id` as the enqueue-time traceparent and stores a `ProcessItemCommand` in the in-memory `DeferredWorkStore`. A `DeferredDispatcher` `BackgroundService` drains the store every 500ms. For each entry:
+
+1. Parse the stored traceparent into an `ActivityContext`
+2. Start a fresh `ActivityKind.Producer` span `DeferredDispatcher.Publish` — new root trace, with `ActivityLink(enqueuerContext)` back to A
+3. Stamp `enqueue.trace_id` + `deferred_work.item_id` span attributes
+4. `bus.PublishAsync` inside the Producer scope → Wolverine stamps the Producer's new traceparent on the envelope
+
+The downstream `ProcessItemCommandHandler` runs under the Producer's new trace (as its child via Wolverine traceparent propagation). The handler's trace is therefore bounded to this dispatch (avoids unbounded trace lifetimes for queued work), while the `ActivityLink` preserves the correlation back to whoever originally enqueued. This matches [OTel messaging semantic conventions](https://opentelemetry.io/docs/specs/semconv/messaging/messaging-spans/), which prefer links over parent-child for producer↔consumer in async/batch scenarios.
+
+Each `.testlog` file contains both the test's trace chain and the downstream dispatch trace chain, with a `-- linked downstream trace --` separator and `Linked: trace=... span=...` annotations on the Producer span, making the full lifecycle visible in one file.
 
 ## Why Not WebApplicationFactory?
 

@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Net.Http.Json;
+using System.Text;
 using System.Text.Json;
 using Tests.Integration.Infrastructure;
 
@@ -19,9 +20,6 @@ public class OtlpForwardingTests(OtlpTestFixture fixture) : IClassFixture<OtlpTe
     {
         if (_traceId is null) return;
 
-        var output = TestContext.Current.TestOutputHelper;
-        if (output is null) return;
-
         // Wait until no new trace-correlated data arrives (stable for 500ms, max 5s)
         var lastCount = 0;
         var stableAt = DateTime.UtcNow;
@@ -39,7 +37,34 @@ public class OtlpForwardingTests(OtlpTestFixture fixture) : IClassFixture<OtlpTe
             }
         }
 
-        output.WriteLine(fixture.Receiver.FormatTraceChain(_traceId));
+        // Primary trace chain for the test's own trace
+        var sb = new StringBuilder();
+        sb.AppendLine(fixture.Receiver.FormatTraceChain(_traceId));
+
+        // Include any downstream traces that link back to this trace — e.g. the
+        // dispatch trace produced by DeferredDispatcher under Option D, which
+        // lives on its own trace id but carries an ActivityLink to _traceId.
+        var linkedTraceIds = fixture.Receiver
+            .GetSpans(s => s.Links.Any(l => l.TraceId == _traceId))
+            .Select(s => s.TraceId!)
+            .Where(id => id != _traceId)
+            .Distinct()
+            .ToList();
+
+        foreach (var linkedTraceId in linkedTraceIds)
+        {
+            sb.AppendLine();
+            sb.AppendLine($"-- linked downstream trace --");
+            sb.AppendLine(fixture.Receiver.FormatTraceChain(linkedTraceId));
+        }
+
+        var content = sb.ToString();
+
+        // Write to VS Test Explorer output
+        TestContext.Current.TestOutputHelper?.WriteLine(content);
+
+        // Write to _Logs/{methodName}.testlog on disk
+        TestLogWriter.Write(TestContext.Current, GetType(), content);
     }
 
     [Fact]
@@ -249,6 +274,103 @@ public class OtlpForwardingTests(OtlpTestFixture fixture) : IClassFixture<OtlpTe
         // 5. Verify trace correlation across the full round-trip
         Assert.Contains(processingLogs, l => l.TraceId == _traceId);
         Assert.Contains(resultLogs, l => l.TraceId == _traceId);
+    }
+
+    /// <summary>
+    /// Verifies SpectrumPlanner issue #155 is fixed by Option D: when work is
+    /// enqueued under trace A and dispatched by a background tick, the dispatched
+    /// Producer span starts a new trace and carries an ActivityLink back to the
+    /// enqueuer. The handler runs under the Producer's new trace (as its child
+    /// via Wolverine's traceparent propagation), and the Producer span's link
+    /// is discoverable by traversing the handler's trace.
+    /// </summary>
+    [Fact]
+    public async Task DeferredDispatch_CorrelatesToEnqueueTraceViaActivityLink()
+    {
+        Assert.NotNull(_traceId);
+
+        // 1. Enqueue under the test's HTTP trace (trace A)
+        var httpClient = fixture.Application.CreateHttpClient("apiservice");
+        var itemName = $"deferred-{Guid.NewGuid():N}";
+        var response = await httpClient.PostAsJsonAsync("/schedule", new { itemName },
+            TestContext.Current.CancellationToken);
+        Assert.Equal(HttpStatusCode.Accepted, response.StatusCode);
+
+        // 2. Wait for the handler's processing log — its TraceId tells us which
+        //    trace the handler ran under.
+        var handlerLogs = await fixture.Receiver.WaitForLogsAsync(
+            l => l.ResourceName == "workerservice"
+                 && l.Body?.Contains(itemName) == true
+                 && l.Body?.Contains("Processing item") == true,
+            minCount: 1,
+            timeout: TimeSpan.FromSeconds(30));
+
+        Assert.NotEmpty(handlerLogs);
+        var handlerLog = handlerLogs[0];
+        Assert.NotNull(handlerLog.TraceId);
+
+        var handlerTraceId = handlerLog.TraceId;
+
+        // 3. Option D assertions:
+        //    (a) handler trace is NOT the enqueue trace (new trace created at dispatch)
+        //    (b) the handler's trace contains a span with an ActivityLink back to
+        //        the enqueue trace — this is the Producer span on the dispatcher side
+        Assert.NotEqual(_traceId, handlerTraceId);
+
+        // Wait for the DeferredDispatcher.Publish span to arrive with its link
+        var spansWithLink = await fixture.Receiver.WaitForSpansAsync(
+            s => s.TraceId == handlerTraceId
+                 && s.Links.Any(l => l.TraceId == _traceId),
+            minCount: 1,
+            timeout: TimeSpan.FromSeconds(15));
+
+        TestContext.Current.TestOutputHelper?.WriteLine(
+            $"enqueue trace={_traceId}");
+        TestContext.Current.TestOutputHelper?.WriteLine(
+            $"handler trace={handlerTraceId}");
+        TestContext.Current.TestOutputHelper?.WriteLine(
+            fixture.Receiver.FormatTraceChain(handlerTraceId!));
+
+        Assert.NotEmpty(spansWithLink);
+
+        // Sanity: the Producer span we found should be the DeferredDispatcher.Publish span
+        Assert.Contains(spansWithLink, s => s.Name == "DeferredDispatcher.Publish");
+    }
+
+    /// <summary>
+    /// Option F: correlation-attribute filtering. Verifies the dispatcher stamps
+    /// a stable correlation attribute so test assertions can find the dispatched
+    /// work WITHOUT depending on which trace-structure choice the production code
+    /// made (Option C same-trace vs Option D new-trace-with-link). If SP later
+    /// changes the strategy, tests filtering by attribute keep working.
+    /// </summary>
+    [Fact]
+    public async Task DeferredDispatch_FindableByEnqueueTraceIdAttribute()
+    {
+        Assert.NotNull(_traceId);
+
+        var httpClient = fixture.Application.CreateHttpClient("apiservice");
+        var itemName = $"deferred-attr-{Guid.NewGuid():N}";
+        var response = await httpClient.PostAsJsonAsync("/schedule", new { itemName },
+            TestContext.Current.CancellationToken);
+        Assert.Equal(HttpStatusCode.Accepted, response.StatusCode);
+
+        // Filter by attribute alone — no trace-id assumptions.
+        var publishSpans = await fixture.Receiver.WaitForSpansByAttributeAsync(
+            "enqueue.trace_id", _traceId!,
+            minCount: 1,
+            timeout: TimeSpan.FromSeconds(30));
+
+        Assert.NotEmpty(publishSpans);
+        Assert.All(publishSpans, s => Assert.Equal("DeferredDispatcher.Publish", s.Name));
+
+        TestContext.Current.TestOutputHelper?.WriteLine(
+            $"Found {publishSpans.Count} dispatch span(s) by attribute enqueue.trace_id={_traceId}");
+        foreach (var span in publishSpans)
+        {
+            TestContext.Current.TestOutputHelper?.WriteLine(
+                $"  trace={span.TraceId} span={span.SpanId} item_id={span.Attributes.GetValueOrDefault("deferred_work.item_id")}");
+        }
     }
 
     /// <summary>

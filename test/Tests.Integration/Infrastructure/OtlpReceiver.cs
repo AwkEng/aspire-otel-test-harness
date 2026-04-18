@@ -151,6 +151,35 @@ public sealed class OtlpReceiver : IAsyncDisposable
     }
 
     /// <summary>
+    /// Gets spans whose attributes contain a matching key/value pair.
+    /// Enables test filtering by correlation attributes (e.g. submission id,
+    /// enqueue trace id) independent of trace structure — useful when the
+    /// production code's trace-parenting choice (same-trace vs new-trace-with-link)
+    /// could vary and test assertions shouldn't depend on it.
+    /// </summary>
+    public IReadOnlyList<OtlpSpan> GetSpansByAttribute(string key, string value)
+    {
+        return GetSpans(s => s.Attributes.TryGetValue(key, out var v) && v == value);
+    }
+
+    /// <inheritdoc cref="GetSpansByAttribute(string, string)"/>
+    public Task<IReadOnlyList<OtlpSpan>> WaitForSpansByAttributeAsync(
+        string key, string value, int minCount, CancellationToken ct)
+    {
+        return WaitForSpansAsync(
+            s => s.Attributes.TryGetValue(key, out var v) && v == value,
+            minCount, ct);
+    }
+
+    /// <inheritdoc cref="GetSpansByAttribute(string, string)"/>
+    public Task<IReadOnlyList<OtlpSpan>> WaitForSpansByAttributeAsync(
+        string key, string value, int minCount, TimeSpan timeout)
+    {
+        return WaitForSpansByAttributeAsync(key, value, minCount,
+            new CancellationTokenSource(timeout).Token);
+    }
+
+    /// <summary>
     /// Waits until the expected number of spans matching the predicate arrive, or the token is cancelled.
     /// </summary>
     public async Task<IReadOnlyList<OtlpSpan>> WaitForSpansAsync(
@@ -319,6 +348,9 @@ public sealed class OtlpReceiver : IAsyncDisposable
             if (span.IsError && span.StatusMessage is not null)
                 sb.AppendLine($"    Status: {span.StatusMessage}");
 
+            foreach (var link in span.Links)
+                sb.AppendLine($"    Linked: trace={link.TraceId} span={link.SpanId}");
+
             foreach (var evt in span.Events.Where(e => e.IsException))
             {
                 sb.AppendLine($"    Exception: {evt.ExceptionType}: {evt.ExceptionMessage}");
@@ -418,6 +450,17 @@ public sealed class OtlpReceiver : IAsyncDisposable
                         });
                     }
 
+                    var links = new List<OtlpSpanLink>();
+                    foreach (var link in span.GetPropertyOrEmpty("links"))
+                    {
+                        links.Add(new OtlpSpanLink
+                        {
+                            TraceId = link.GetStringOrNull("traceId"),
+                            SpanId = link.GetStringOrNull("spanId"),
+                            Attributes = ParseAttributes(link),
+                        });
+                    }
+
                     _spans.Add(new OtlpSpan
                     {
                         ResourceName = serviceName,
@@ -434,6 +477,7 @@ public sealed class OtlpReceiver : IAsyncDisposable
                         StatusCode = statusCode,
                         StatusMessage = statusMessage,
                         Events = events,
+                        Links = links,
                         Attributes = ParseAttributes(span),
                     });
                 }
@@ -550,9 +594,17 @@ public record OtlpSpan
     public int StatusCode { get; init; }
     public string? StatusMessage { get; init; }
     public IReadOnlyList<OtlpSpanEvent> Events { get; init; } = [];
+    public IReadOnlyList<OtlpSpanLink> Links { get; init; } = [];
     public IReadOnlyDictionary<string, string?> Attributes { get; init; } = new Dictionary<string, string?>();
 
     public bool IsError => StatusCode == 2;
+}
+
+public record OtlpSpanLink
+{
+    public string? TraceId { get; init; }
+    public string? SpanId { get; init; }
+    public IReadOnlyDictionary<string, string?> Attributes { get; init; } = new Dictionary<string, string?>();
 }
 
 public record OtlpSpanEvent
